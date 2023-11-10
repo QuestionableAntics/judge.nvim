@@ -39,7 +39,7 @@ require('judge.nvim').save_session()
 Deletes your current session
 
 ```lua
-require('judge.nvim').save_session()
+require('judge.nvim').delete_session()
 ```
 
 
