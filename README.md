@@ -1,0 +1,2 @@
+# Description
+Minimal session management
