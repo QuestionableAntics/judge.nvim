@@ -1,4 +1,126 @@
+------------------------------------------------------------
+-- Utils
+------------------------------------------------------------
+
+local utils = {}
+
+
+function utils.build_session_path(opts)
+	return opts.session_dir .. "/" .. opts.session_name
+end
+
+
+function utils.update_session_state(state, opts)
+	state.previous_session_name = state.session_name
+	state.session_name = opts.session_name
+	state.session_path = utils.build_session_path({
+		session_dir = opts.session_dir,
+		session_name = state.session_name,
+	})
+
+	return state
+end
+
+
+function utils.should_save(opts)
+	local cwd = vim.fn.getcwd()
+
+	-- if neovim was called with a path to a specifc file, don't write session
+	if opts.ignore_argv and vim.fn.argc() > 0 then return false end
+
+	-- if the current directory is in the ignored directories, don't save session
+	for _, ignored_directory in ipairs(opts.ignored_directories) do
+		if cwd == ignored_directory then
+			return false
+		end
+	end
+
+	return true
+end
+
+
+function utils.should_load(opts)
+	-- if neovim was called with a path to a specific file, don't write session
+	if opts.ignore_argv and vim.fn.argc() > 0 then return false end
+
+	-- if the current session is the same as the session that is about to be loaded, don't bother
+	if JudgeState.session_name == opts.session_name then return false end
+
+	return true
+end
+
+
+function utils.clean_buffers(opts)
+	if not opts.ignored_buffer_patterns then return end
+
+	-- get all open buffers
+	local buffers = vim.api.nvim_list_bufs()
+
+	-- for all open buffers
+	for _, buffer in ipairs(buffers) do
+		local buffer_name = vim.fn.expand("#" .. buffer .. ":~")
+
+		-- if the buffer matches an ignored pattern, get it's jumplist and look ahead to find a buffer that doesn't match the pattern
+		-- if one is found, set the current buffer to that buffer
+		for _, ignored_buffer_pattern in ipairs(opts.ignored_buffer_patterns) do
+			if string.find(buffer_name, ignored_buffer_pattern) then
+				local jumplist = vim.fn.getjumplist(buffer)
+
+				for _, jumplist_entry in ipairs(jumplist) do
+					local jumplist_entry_name = vim.fn.expand("#" .. jumplist_entry .. ":~")
+
+					if not string.find(jumplist_entry_name, ignored_buffer_pattern) then
+						vim.api.nvim_set_current_buf(jumplist_entry)
+						break
+					end
+				end
+			end
+		end
+	end
+end
+
+
+function utils.cleanup_buffers(opts)
+	if not opts.ignored_buffer_patterns then return end
+
+	local buffers = vim.api.nvim_list_bufs()
+
+	-- for all open buffers
+	for _, buffer in ipairs(buffers) do
+		local buffer_name = vim.fn.expand("#" .. buffer .. ":~")
+
+		-- if the buffer matches an ignored pattern, delete it
+		for _, ignored_buffer_pattern in ipairs(opts.ignored_buffer_patterns) do
+			if string.find(buffer_name, ignored_buffer_pattern) then
+				vim.api.nvim_buf_delete(buffer, { force = true })
+			end
+		end
+	end
+end
+
+
+-- Use telescope to search for sessions
+function utils.search_sessions(on_select, telescope_opts)
+	-- copy telescope options
+	local opts = vim.tbl_deep_extend("force", {}, telescope_opts)
+
+	-- attach custom mappings
+	opts.attach_mappings = function(_, map)
+		map("i", "<CR>", on_select)
+		map("n", "<CR>", on_select)
+		return true
+	end
+
+	require("telescope.builtin").find_files(opts)
+end
+
+
+------------------------------------------------------------
+--- Judge
+------------------------------------------------------------
+
 local M = {}
+JudgeState = {}
 
 
 M.opts = {
@@ -10,14 +132,10 @@ M.opts = {
 	ignore_argv = true,
 	-- directory to save sessions in
 	session_dir = vim.fn.expand("$HOME/.nvim/sessions"),
-	-- how to build the session name
-	build_session_name = function()
-		return vim.fn.fnamemodify(vim.fn.getcwd(), ":p:h:t")
-	end,
 	-- function to call when switching to a session
 	on_session_switch = function()
 		-- stop all lsp servers
-		vim.lsp.stop_client(vim.lsp.get_active_clients())
+		vim.lsp.stop_client(vim.lsp.get_clients())
 	end,
 }
 
@@ -34,159 +152,100 @@ M.telescope_opts = {
 }
 
 
-function M.should_save()
-	local cwd = vim.fn.getcwd()
-
-	-- if neovim was called with a path to a specifc file, don't write session
-	if M.ignore_argv and vim.fn.argc() > 0 then return false end
-
-	-- if the current directory is in the ignored directories, don't save session
-	for _, ignored_directory in ipairs(M.opts.ignored_directories) do
-		if cwd == ignored_directory then
-			return false
-		end
-	end
-
-	return true
-end
-
-
-function M.should_load()
-	-- if neovim was called with a path to a specifc file, don't write session
-	if M.ignore_argv and vim.fn.argc() > 0 then return false end
-
-	return true
-end
-
-
-function M.cleanup_buffers()
-	-- get all open buffers
-	local buffers = vim.api.nvim_list_bufs()
-
-	-- for all open buffers
-	for _, buffer in ipairs(buffers) do
-		local buffer_name = vim.fn.expand("#" .. buffer .. ":~")
-
-		-- if the buffer matches an ignored pattern, delete it
-		for _, ignored_buffer_pattern in ipairs(M.opts.ignored_buffer_patterns) do
-			if string.find(buffer_name, ignored_buffer_pattern) then
-				vim.api.nvim_buf_delete(buffer, { force = true })
-			end
-		end
-	end
-end
-
-
 function M.save_session()
-	if not M.should_save() then return end
+	if not utils.should_save(M.opts) then return end
 
-	M.cleanup_buffers()
+	utils.cleanup_buffers(M.opts)
 
 	-- create session directory if it doesn't exist
 	if vim.fn.isdirectory(M.opts.session_dir) == 0 then
 		vim.fn.mkdir(M.opts.session_dir, "p")
 	end
 
-	vim.cmd("mksession! " .. M.session_file)
+	vim.cmd("mksession! " .. JudgeState.session_path)
 end
 
 
-function M.load_session(session_file)
-	if not M.should_load() then return end
+function M.load_session(session_name)
+	if not utils.should_load(M.opts) then return end
 
-	M.previous_session_file = M.session_file
+	utils.update_session_state(
+		JudgeState,
+		{
+			session_name = session_name,
+			session_dir = M.opts.session_dir,
+		}
+	)
 
-	if session_file ~= nil then
-		M.session_file = session_file
-	end
-
-	if vim.fn.filereadable(M.session_file) == 1 then
-		vim.cmd("source " .. M.session_file)
-	end
-end
-
-
-function M.delete_session(session_file)
-	local sf = session_file or M.session_file
-
-	if vim.fn.filereadable(sf) == 1 then
-		vim.fn.delete(sf)
+	if vim.fn.filereadable(JudgeState.session_path) == 1 then
+		vim.cmd("source " .. JudgeState.session_path)
 	end
 end
 
 
--- Use telescope to search for sessions
-function M.search_sessions(on_select)
-	-- copy telescope options
-	local search_options = {}
-	vim.tbl_extend("force", search_options, M.telescope_opts)
+function M.delete_session(session_name)
+	session_name = session_name or JudgeState.session_name
 
-	local opts = vim.tbl_extend("force", M.telescope_opts, search_options)
+	local session_path = utils.build_session_path({
+		session_dir = M.opts.session_dir,
+		session_name = session_name,
+	})
 
-	-- attach custom mappings
-	if on_select ~= nil then
-		opts.attach_mappings = function(_, map)
-			map("i", "<CR>", on_select)
-			map("n", "<CR>", on_select)
-			return true
-		end
+	if vim.fn.filereadable(session_path) == 1 then
+		vim.fn.delete(session_path)
 	end
-
-	require("telescope.builtin").find_files(opts)
 end
 
 
 function M.search_switch_sessions()
 	-- open session when selected
-	local function on_select(prompt_bufnr, map)
+	local function on_select(prompt_bufnr, _)
 		M.save_session()
 
-		M.previous_session_file = M.session_file
-
-		local session_file = M.opts.session_dir .. "/" .. require("telescope.actions.state").get_selected_entry(prompt_bufnr).value
+		local session_name = require("telescope.actions.state").get_selected_entry(prompt_bufnr).value
 
 		require("telescope.actions").close(prompt_bufnr)
 
-		M.load_session(session_file)
+		M.load_session(session_name)
 	end
 
-	M.search_sessions(on_select)
+	utils.search_sessions(on_select, M.telescope_opts)
 end
 
 
 function M.search_delete_session()
 	-- delete session when selected
-	local function on_select(prompt_bufnr, map)
+	local function on_select(prompt_bufnr, _)
 		require("telescope.actions.state").get_current_picker(prompt_bufnr):delete_selection(function(selection)
-			local session_file = M.opts.session_dir .. "/" .. selection.value
-
-			M.delete_session(session_file)
+			M.delete_session(selection.value)
 		end)
 	end
 
-	M.search_sessions(on_select)
+	utils.search_sessions(on_select, M.telescope_opts)
 end
 
 
 function M.go_to_previous_session()
-	if M.previous_session_file ~= M.session_file then
-		M.load_session(M.previous_session_file)
-	end
+	M.load_session(JudgeState.previous_session_name)
 end
 
 
 function M.setup(opts)
-	M.opts = vim.tbl_extend("force", M.opts, opts)
+	M.opts = vim.tbl_deep_extend("force", M.opts, opts)
 
-	M.session_file = M.opts.session_dir .. "/" .. M.opts.build_session_name() .. ".vim"
-
-	M.previous_session_file = M.session_file
+	utils.update_session_state(
+		JudgeState,
+		{
+			session_name = vim.fn.fnamemodify(vim.fn.getcwd(), ":p:h:t"),
+			session_dir = M.opts.session_dir,
+		}
+	)
 
 	-- Load session on start
 	vim.api.nvim_create_autocmd(
 		"VimEnter",
 		{
-			callback = function() M.load_session(M.session_file) end,
+			callback = function() M.load_session(JudgeState.session_name) end,
 			nested = true,
 		}
 	)
@@ -194,7 +253,9 @@ function M.setup(opts)
 	-- Write session on exit
 	vim.api.nvim_create_autocmd(
 		"VimLeavePre",
-		{ callback = M.save_session }
+		{
+			callback = function() M.save_session() end
+		}
 	)
 end
 
