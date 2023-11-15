@@ -36,7 +36,7 @@ require('judge.nvim').save_session()
 
 
 ## `delete_session`
-Deletes your current session
+Deletes your current session. Accepts an optional `session_name` parameter, defaulting to your current session if one is not passed in.
 
 ```lua
 require('judge.nvim').delete_session()
@@ -60,7 +60,8 @@ require('judge.nvim').search_delete_sessions()
 
 
 ## `go_to_previous_session`
-Convenience method to open the session you last switched from
+Convenience method to open the session you last switched from.
+
 Does not trigger if this is the first session since opening Neovim
 
 ```lua
