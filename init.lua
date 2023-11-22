@@ -50,36 +50,6 @@ function utils.should_load(opts)
 end
 
 
-function utils.clean_buffers(opts)
-	if not opts.ignored_buffer_patterns then return end
-
-	-- get all open buffers
-	local buffers = vim.api.nvim_list_bufs()
-
-	-- for all open buffers
-	for _, buffer in ipairs(buffers) do
-		local buffer_name = vim.fn.expand("#" .. buffer .. ":~")
-
-		-- if the buffer matches an ignored pattern, get it's jumplist and look ahead to find a buffer that doesn't match the pattern
-		-- if one is found, set the current buffer to that buffer
-		for _, ignored_buffer_pattern in ipairs(opts.ignored_buffer_patterns) do
-			if string.find(buffer_name, ignored_buffer_pattern) then
-				local jumplist = vim.fn.getjumplist(buffer)
-
-				for _, jumplist_entry in ipairs(jumplist) do
-					local jumplist_entry_name = vim.fn.expand("#" .. jumplist_entry .. ":~")
-
-					if not string.find(jumplist_entry_name, ignored_buffer_pattern) then
-						vim.api.nvim_set_current_buf(jumplist_entry)
-						break
-					end
-				end
-			end
-		end
-	end
-end
-
-
 function utils.cleanup_buffers(opts)
 	if not opts.ignored_buffer_patterns then return end
 
@@ -96,22 +66,6 @@ function utils.cleanup_buffers(opts)
 			end
 		end
 	end
-end
-
-
--- Use telescope to search for sessions
-function utils.search_sessions(on_select, telescope_opts)
-	-- copy telescope options
-	local opts = vim.tbl_deep_extend("force", {}, telescope_opts)
-
-	-- attach custom mappings
-	opts.attach_mappings = function(_, map)
-		map("i", "<CR>", on_select)
-		map("n", "<CR>", on_select)
-		return true
-	end
-
-	require("telescope.builtin").find_files(opts)
 end
 
 
@@ -133,10 +87,7 @@ M.opts = {
 	-- directory to save sessions in
 	session_dir = vim.fn.expand("$HOME/.nvim/sessions"),
 	-- function to call when switching to a session
-	on_session_switch = function()
-		-- stop all lsp servers
-		vim.lsp.stop_client(vim.lsp.get_clients())
-	end,
+	on_session_switch = function() end,
 }
 
 
@@ -162,7 +113,7 @@ function M.save_session()
 		vim.fn.mkdir(M.opts.session_dir, "p")
 	end
 
-	vim.cmd("mksession! " .. JudgeState.session_path)
+	vim.api.nvim_command("mksession! " .. JudgeState.session_path)
 end
 
 
@@ -178,7 +129,8 @@ function M.load_session(session_name)
 	)
 
 	if vim.fn.filereadable(JudgeState.session_path) == 1 then
-		vim.cmd("source " .. JudgeState.session_path)
+		vim.api.nvim_command("silent source " .. JudgeState.session_path)
+		M.opts.on_session_switch()
 	end
 end
 
@@ -209,19 +161,25 @@ function M.search_switch_sessions()
 		M.load_session(session_name)
 	end
 
-	utils.search_sessions(on_select, M.telescope_opts)
-end
-
-
-function M.search_delete_session()
-	-- delete session when selected
-	local function on_select(prompt_bufnr, _)
+	local function on_delete(prompt_bufnr, _)
 		require("telescope.actions.state").get_current_picker(prompt_bufnr):delete_selection(function(selection)
 			M.delete_session(selection.value)
 		end)
 	end
 
-	utils.search_sessions(on_select, M.telescope_opts)
+	-- copy telescope options
+	local opts = vim.tbl_deep_extend("force", {}, M.telescope_opts)
+
+	-- attach custom mappings
+	opts.attach_mappings = function(_, map)
+		map("i", "<CR>", on_select)
+		map("n", "<CR>", on_select)
+		map("i", "<C-d>", on_delete)
+		map("n", "<C-d>", on_delete)
+		return true
+	end
+
+	require("telescope.builtin").find_files(opts)
 end
 
 
